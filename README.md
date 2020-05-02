@@ -15,4 +15,5 @@ For questions or issues please use the [Google Group](https://groups.google.com/
 # Usage example #
 
 ./darknet detector demo_camera cfg/coco.data cfg/yolov3_lowgpu.cfg ../yolo_try/yolov3.weights
+
 ./darknet detector demo_screencapture cfg/coco.data cfg/yolov3_lowgpu.cfg ../yolo_try/yolov3.weights
