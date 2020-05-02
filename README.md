@@ -10,3 +10,9 @@ Yolo v4 source code: https://github.com/AlexeyAB/darknet
 For more information see the [Darknet project website](http://pjreddie.com/darknet).
 
 For questions or issues please use the [Google Group](https://groups.google.com/forum/#!forum/darknet).
+
+
+# Usage example #
+
+./darknet detector demo_camera cfg/coco.data cfg/yolov3_lowgpu.cfg ../yolo_try/yolov3.weights
+./darknet detector demo_screencapture cfg/coco.data cfg/yolov3_lowgpu.cfg ../yolo_try/yolov3.weights
