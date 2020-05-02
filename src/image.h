@@ -9,6 +9,14 @@
 #include "box.h"
 #include "darknet.h"
 
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
+#include <X11/extensions/XTest.h>
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,8 +24,10 @@ extern "C" {
 #ifdef OPENCV
 void *open_video_stream(const char *f, int c, int w, int h, int fps);
 image get_image_from_stream(void *p);
+image get_image_from_screen(Display* pDisplay, Window* pRoot, int x, int y, int width, int height);
 image load_image_cv(char *filename, int channels);
 int show_image_cv(image im, const char* name, int ms);
+void send_key(Display* pDisplay);
 #endif
 
 float get_color(int c, int x, int max);

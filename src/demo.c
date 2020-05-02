@@ -9,9 +9,20 @@
 #include "demo.h"
 #include <sys/time.h>
 
-#define DEMO 1
+#include <stdarg.h>
 
 #ifdef OPENCV
+
+#define nullptr ((void*)0)
+
+#define DEMO 1
+
+#define SCREEN_LEFT 700
+#define SCREEN_TOP 300
+#define SCREEN_WIDTH 700
+#define SCREEN_HEIGHT 500
+
+#define SCREEN_CAPTURE_SLEEP .01
 
 static char **demo_names;
 static image **demo_alphabet;
@@ -21,11 +32,14 @@ static network *net;
 static image buff [3];
 static image buff_letter[3];
 static int buff_index = 0;
-static void * cap;
+static void * cap; // for demo_camera
 static float fps = 0;
 static float demo_thresh = 0;
 static float demo_hier = .5;
 static int running = 0;
+
+static Display* pDisplay = 0; // for demo_screen_capture
+static Window* pRoot = 0; // for demo_screen_capture
 
 static int demo_frame = 3;
 static int demo_index = 0;
@@ -34,6 +48,9 @@ static float *avg;
 static int demo_done = 0;
 static int demo_total = 0;
 double demo_time;
+
+static int frame_counter = 0;
+static FILE* fp_out = NULL;
 
 detection *get_network_boxes(network *net, int w, int h, float thresh, float hier, int *map, int relative, int *num);
 
@@ -80,6 +97,14 @@ detection *avg_predictions(network *net, int *nboxes)
     }
     detection *dets = get_network_boxes(net, buff[0].w, buff[0].h, demo_thresh, demo_hier, 0, 1, nboxes);
     return dets;
+}
+
+void log_to_file (char * format, ...)
+{
+  va_list args;
+  va_start (args, format);
+  if (fp_out) fprintf(fp_out, format, args);
+  va_end (args);
 }
 
 void *detect_in_thread(void *ptr)
@@ -130,7 +155,71 @@ void *detect_in_thread(void *ptr)
     printf("Objects:\n\n");
     image display = buff[(buff_index+2) % 3];
     draw_detections(display, dets, nboxes, demo_thresh, demo_names, demo_alphabet, demo_classes);
+
+    if (fp_out != NULL)
+    {
+        fprintf(fp_out, "=== %08d =============\n", frame_counter);
+
+        int i, j;
+
+        // for(j = 0; j < demo_classes; ++j){
+        //     fprintf(fp_out, "%d - %s\n", j, demo_names[j]);
+        // }
+        // 2: CAR
+        // 7: TRUCK
+
+        for (i = 0; i < nboxes; ++i)
+        {
+            int prob_car = -1;
+            int prob_truck = -1;
+
+            if ( dets[i].prob[2] > demo_thresh ) prob_car = dets[i].prob[2]*100;
+            if ( dets[i].prob[7] > demo_thresh ) prob_truck = dets[i].prob[7]*100;
+
+            /*if ( prob_car > 0 || prob_truck > 0 )
+            {
+                if (prob_car >= prob_truck) fprintf(fp_out, "car %d%% - truck %d%%\n", prob_car, prob_truck);
+                else fprintf(fp_out, "truck %d%% - car %d%%\n", prob_truck, prob_car);
+                printf("---\n");
+            }*/
+
+            /*int class = -1;
+            for (j = 0; j < demo_classes; ++j)
+            {
+                if (dets[i].prob[j] > demo_thresh)
+                {
+                    class = j;
+                    fprintf(fp_out, "%s: %.0f%%\n", demo_names[j], dets[i].prob[j]*100);
+                }
+            }*/
+
+            box b = dets[i].bbox;
+
+            if (prob_car > 0)
+            {
+                fprintf(fp_out, "Car (%d%%): (%d, %d)+(%d, %d)\n", prob_car, (int)(b.x*display.w),
+                                                                             (int)(b.y*display.h),
+                                                                             (int)(b.w*display.w),
+                                                                             (int)(b.h*display.h));
+            }
+            if (prob_truck > 0)
+            {
+                fprintf(fp_out, "Truck (%d%%): (%d, %d)+(%d, %d)\n", prob_truck, (int)(b.x*display.w),
+                                                                                 (int)(b.y*display.h),
+                                                                                 (int)(b.w*display.w),
+                                                                                 (int)(b.h*display.h));
+            }
+        }
+        //fprintf(fp_out, "================\n");
+        fflush(fp_out);
+    }
+
     free_detections(dets, nboxes);
+
+    if (fp_out != NULL)
+    {
+        if (frame_counter > 50) send_key(pDisplay);
+    }
 
     demo_index = (demo_index + 1)%demo_frame;
     running = 0;
@@ -149,6 +238,18 @@ void *fetch_in_thread(void *ptr)
     return 0;
 }
 
+void *fetch_from_screen_in_thread(void *ptr)
+{
+    free_image(buff[buff_index]);
+    buff[buff_index] = get_image_from_screen(pDisplay, pRoot, SCREEN_LEFT, SCREEN_TOP, SCREEN_WIDTH, SCREEN_HEIGHT);
+    if(buff[buff_index].data == 0) {
+        demo_done = 1;
+        return 0;
+    }
+    letterbox_image_into(buff[buff_index], net->w, net->h, buff_letter[buff_index]);
+    return 0;
+}
+
 void *display_in_thread(void *ptr)
 {
     int c = show_image(buff[(buff_index + 1)%3], "Demo", 1);
@@ -156,6 +257,9 @@ void *display_in_thread(void *ptr)
     if (c == 27) {
         demo_done = 1;
         return 0;
+    } else if (c == 115) {
+        printf("What is this?\n");
+        send_key(pDisplay);
     } else if (c == 82) {
         demo_thresh += .02;
     } else if (c == 84) {
@@ -184,7 +288,7 @@ void *detect_loop(void *ptr)
     }
 }
 
-void demo(char *cfgfile, char *weightfile, float thresh, int cam_index, const char *filename, char **names, int classes, int delay, char *prefix, int avg_frames, float hier, int w, int h, int frames, int fullscreen)
+void demo_camera(char *cfgfile, char *weightfile, float thresh, int cam_index, const char *filename, char **names, int classes, int delay, char *prefix, int avg_frames, float hier, int w, int h, int frames, int fullscreen)
 {
     //demo_frame = avg_frames;
     image **alphabet = load_alphabet();
@@ -310,7 +414,7 @@ void demo(char *cfgfile, char *weightfile, float thresh, int cam_index, const ch
 
    int count = 0;
    if(!prefix){
-   cvNamedWindow("Demo", CV_WINDOW_NORMAL); 
+   cvNamedWindow("Demo", CV_WINDOW_NORMAL);
    if(fullscreen){
    cvSetWindowProperty("Demo", CV_WND_PROP_FULLSCREEN, CV_WINDOW_FULLSCREEN);
    } else {
@@ -340,10 +444,109 @@ pthread_join(detect_thread, 0);
 }
 }
 */
+
+void demo_screencapture(char *cfgfile, char *weightfile, float thresh, int cam_index, const char *filename, char **names, int classes, int delay, char *prefix, int avg_frames, float hier, int w, int h, int frames, int fullscreen)
+{
+    //demo_frame = avg_frames;
+    image **alphabet = load_alphabet();
+    demo_names = names;
+    demo_alphabet = alphabet;
+    demo_classes = classes;
+    demo_thresh = thresh;
+    demo_hier = hier;
+    printf("ETS2 YOLO\n");
+    net = load_network(cfgfile, weightfile, 0);
+    set_batch_network(net, 1);
+    pthread_t detect_thread;
+    pthread_t fetch_thread;
+
+    srand(2222222);
+
+    fp_out = (FILE*)fopen("./output.txt", "w");
+
+    pDisplay = XOpenDisplay(nullptr);
+    pRoot = &(DefaultRootWindow(pDisplay));
+
+    int i;
+    demo_total = size_network(net);
+    predictions = calloc(demo_frame, sizeof(float*));
+    for (i = 0; i < demo_frame; ++i){
+        predictions[i] = calloc(demo_total, sizeof(float));
+    }
+    avg = calloc(demo_total, sizeof(float));
+
+    /*if(filename){
+        printf("video file: %s\n", filename);
+        cap = open_video_stream(filename, 0, 0, 0, 0);
+    }else{
+        cap = open_video_stream(0, cam_index, w, h, frames);
+    }
+
+    if(cap) //error("Couldn't connect to webcam.\n");
+    {
+        printf("get_image_from_stream\n");
+        buff[0] = get_image_from_stream(cap);
+    }*/
+    //else {
+        buff[0] = get_image_from_screen(pDisplay, pRoot, SCREEN_LEFT, SCREEN_TOP, SCREEN_WIDTH, SCREEN_HEIGHT);
+    //}
+
+    buff[1] = copy_image(buff[0]);
+    buff[2] = copy_image(buff[0]);
+    buff_letter[0] = letterbox_image(buff[0], net->w, net->h);
+    buff_letter[1] = letterbox_image(buff[0], net->w, net->h);
+    buff_letter[2] = letterbox_image(buff[0], net->w, net->h);
+
+    if(!prefix){
+        make_window("Demo", 1352, 1013, fullscreen);
+    }
+
+    demo_time = what_time_is_it_now();
+
+    while(!demo_done){
+
+        buff_index = (buff_index + 1) %3;
+        if(pthread_create(&fetch_thread, 0, fetch_from_screen_in_thread, 0)) error("Thread creation failed");
+        if(pthread_create(&detect_thread, 0, detect_in_thread, 0)) error("Thread creation failed");
+
+        if(!prefix){
+            fps = 1./(what_time_is_it_now() - demo_time);
+            demo_time = what_time_is_it_now();
+
+            display_in_thread(0);
+
+            char name[256];
+            sprintf(name, "%s_%08d", "output", frame_counter);
+            save_image(buff[(buff_index + 1)%3], name);
+        }else{
+            char name[256];
+            sprintf(name, "%s_%08d", prefix, frame_counter);
+            save_image(buff[(buff_index + 1)%3], name);
+        }
+        pthread_join(fetch_thread, 0);
+        pthread_join(detect_thread, 0);
+
+        sleep(SCREEN_CAPTURE_SLEEP);
+        printf("\nCounter:%d\n", frame_counter);
+
+        ++frame_counter;
+    }
+
+    fclose(fp_out);
+    fp_out = NULL;
+
+    XFlush(pDisplay);
+    pDisplay = NULL;
+}
+
 #else
-void demo(char *cfgfile, char *weightfile, float thresh, int cam_index, const char *filename, char **names, int classes, int delay, char *prefix, int avg, float hier, int w, int h, int frames, int fullscreen)
+void demo_camera(char *cfgfile, char *weightfile, float thresh, int cam_index, const char *filename, char **names, int classes, int delay, char *prefix, int avg, float hier, int w, int h, int frames, int fullscreen)
 {
     fprintf(stderr, "Demo needs OpenCV for webcam images.\n");
+}
+void demo_screencapture(char *cfgfile, char *weightfile, float thresh, int cam_index, const char *filename, char **names, int classes, int delay, char *prefix, int avg, float hier, int w, int h, int frames, int fullscreen)
+{
+    fprintf(stderr, "Demo needs libX11 for screen capture.\n");
 }
 #endif
 
